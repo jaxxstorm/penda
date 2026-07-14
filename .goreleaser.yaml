@@ -1,0 +1,61 @@
+version: 2
+
+project_name: penda
+
+builds:
+  - id: penda
+    main: .
+    binary: penda
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    builds:
+      - penda
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+
+homebrew_casks:
+  - name: penda
+    repository:
+      owner: jaxxstorm
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TOKEN }}"
+    commit_author:
+      name: GitHub Actions
+      email: bot@leebriggs.co.uk
+    directory: Casks
+    homepage: "https://leebriggs.co.uk"
+    description: "Apply Dependabot security fixes locally."
+    binaries:
+      - penda
+
+scoops:
+  - name: penda
+    url_template: "https://github.com/jaxxstorm/penda/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    repository:
+      owner: jaxxstorm
+      name: scoop-bucket
+      branch: main
+      token: "{{ .Env.HOMEBREW_TOKEN }}"
+    commit_author:
+      name: bot
+      email: bot@leebriggs.co.uk
+    commit_msg_template: "Scoop update for {{ .ProjectName }} version {{ .Tag }}"
+    homepage: "https://leebriggs.co.uk/"
+    description: "Apply Dependabot security fixes locally."
