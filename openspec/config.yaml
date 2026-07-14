@@ -1,0 +1,22 @@
+schema: spec-driven
+
+context: |
+  Penda is a Go CLI for bringing a GitHub repository up to date with the
+  dependency fixes identified in its open Dependabot issues.
+
+  The CLI uses alecthomas/kong for command-line parsing. It uses
+  charmbracelet/lipgloss and related libraries for polished terminal output,
+  but it is not an interactive TUI.
+
+  Penda traverses a repository and its subdirectories, detects every package
+  manager supported by Dependabot, and invokes the native package-management
+  tooling to apply the relevant dependency fixes locally. It must preserve
+  existing dependency constraints where possible and avoid broad or destructive
+  dependency updates unrelated to Dependabot findings.
+
+  Penda is designed to be straightforward to run in CI pipelines. Its purpose
+  is to provide a reliable alternative to Dependabot pull requests when rebases,
+  grouping, or other PR-management concerns make automated dependency updates
+  difficult.
+
+  Tech stack: Go 1.26.2.
