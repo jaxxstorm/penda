@@ -51,7 +51,6 @@ scoops:
       owner: jaxxstorm
       name: scoop-bucket
       branch: main
-      token: "{{ .Env.HOMEBREW_TOKEN }}"
     commit_author:
       name: bot
       email: bot@leebriggs.co.uk
