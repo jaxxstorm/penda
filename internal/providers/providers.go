@@ -1,28 +1,39 @@
-package main
+package providers
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/jaxxstorm/penda/internal/github"
 )
+
+type alert = github.Alert
+type alertReporter func(int, alert)
+
+type Provider interface {
+	Process(context.Context, string, []alert, ...alertReporter) error
+}
 
 type providerOps struct {
 	runCommand      func(context.Context, string, string, ...string) error
 	readFile        func(string) ([]byte, error)
 	writeFileAtomic func(string, []byte, fs.FileMode) error
 	stat            func(string) (fs.FileInfo, error)
+	manifestDiff    func(string, string) ([]byte, error)
 }
 
 type pythonProvider struct{ ops providerOps }
 type npmProvider struct{ ops providerOps }
 type githubActionsProvider struct{ ops providerOps }
 
-type commandError struct {
+type CommandError struct {
 	dir    string
 	name   string
 	args   []string
@@ -30,11 +41,11 @@ type commandError struct {
 	err    error
 }
 
-func (err *commandError) Error() string {
+func (err *CommandError) Error() string {
 	return "native package command failed"
 }
 
-func (err *commandError) Unwrap() error {
+func (err *CommandError) Unwrap() error {
 	return err.err
 }
 
@@ -45,25 +56,38 @@ func defaultProviderOps() providerOps {
 			command.Dir = dir
 			output, err := command.CombinedOutput()
 			if err != nil {
-				return &commandError{dir: dir, name: name, args: args, output: string(output), err: err}
+				return &CommandError{dir: dir, name: name, args: args, output: string(output), err: err}
 			}
 			return nil
 		},
 		readFile:        os.ReadFile,
 		writeFileAtomic: writeFileAtomic,
 		stat:            os.Stat,
+		manifestDiff: func(dir, manifest string) ([]byte, error) {
+			return exec.Command("git", "-C", dir, "diff", "--", manifest).Output()
+		},
 	}
 }
 
-func builtinProviders() []alertProvider {
-	ops := defaultProviderOps()
-	return []alertProvider{pythonProvider{ops: ops}, npmProvider{ops: ops}, githubActionsProvider{ops: ops}}
+func (err *CommandError) Command() string {
+	return strings.TrimSpace(err.name + " " + strings.Join(err.args, " "))
 }
 
-func (provider pythonProvider) process(ctx context.Context, dir string, alerts []alert, reports ...alertReporter) error {
+func (err *CommandError) Directory() string { return err.dir }
+func (err *CommandError) Output() string    { return err.output }
+
+func Builtin() []Provider {
+	ops := defaultProviderOps()
+	return []Provider{pythonProvider{ops: ops}, npmProvider{ops: ops}, githubActionsProvider{ops: ops}}
+}
+
+func (provider pythonProvider) Process(ctx context.Context, dir string, alerts []alert, reports ...alertReporter) error {
 	report := firstReporter(reports)
 	for index, alert := range alerts {
 		if alert.PackageName == "" || alert.FirstPatchedVersion == "" || !isPythonEcosystem(alert.PackageEcosystem) {
+			continue
+		}
+		if resolvedInManifest(provider.ops, dir, alert) {
 			continue
 		}
 		switch filepath.Base(alert.ManifestPath) {
@@ -97,6 +121,10 @@ func (provider pythonProvider) process(ctx context.Context, dir string, alerts [
 		}
 	}
 	return nil
+}
+
+func (provider pythonProvider) process(ctx context.Context, dir string, alerts []alert, reports ...alertReporter) error {
+	return provider.Process(ctx, dir, alerts, reports...)
 }
 
 func (provider pythonProvider) updatePip(ctx context.Context, dir string, alert alert, index int, report alertReporter) error {
@@ -152,11 +180,14 @@ func (provider pythonProvider) runPackageCommand(ctx context.Context, dir string
 	return nil
 }
 
-func (provider npmProvider) process(ctx context.Context, dir string, alerts []alert, reports ...alertReporter) error {
+func (provider npmProvider) Process(ctx context.Context, dir string, alerts []alert, reports ...alertReporter) error {
 	report := firstReporter(reports)
 	seen := make(map[string]struct{})
 	for index, alert := range alerts {
 		if strings.ToLower(alert.PackageEcosystem) != "npm" || alert.PackageName == "" || alert.FirstPatchedVersion == "" || !isNPMManifest(alert.ManifestPath) {
+			continue
+		}
+		if resolvedInManifest(provider.ops, dir, alert) {
 			continue
 		}
 		manifest, err := resolveManifest(dir, alert.ManifestPath)
@@ -194,10 +225,17 @@ func (provider npmProvider) process(ctx context.Context, dir string, alerts []al
 	return nil
 }
 
-func (provider githubActionsProvider) process(_ context.Context, dir string, alerts []alert, reports ...alertReporter) error {
+func (provider npmProvider) process(ctx context.Context, dir string, alerts []alert, reports ...alertReporter) error {
+	return provider.Process(ctx, dir, alerts, reports...)
+}
+
+func (provider githubActionsProvider) Process(_ context.Context, dir string, alerts []alert, reports ...alertReporter) error {
 	report := firstReporter(reports)
 	for index, alert := range alerts {
 		if !isGitHubActionsEcosystem(alert.PackageEcosystem) || alert.PackageName == "" || alert.FirstPatchedVersion == "" || !isWorkflowFile(alert.ManifestPath) {
+			continue
+		}
+		if resolvedInManifest(provider.ops, dir, alert) {
 			continue
 		}
 		manifest, err := resolveManifest(dir, alert.ManifestPath)
@@ -222,6 +260,10 @@ func (provider githubActionsProvider) process(_ context.Context, dir string, ale
 		}
 	}
 	return nil
+}
+
+func (provider githubActionsProvider) process(ctx context.Context, dir string, alerts []alert, reports ...alertReporter) error {
+	return provider.Process(ctx, dir, alerts, reports...)
 }
 
 func resolveManifest(dir, manifestPath string) (string, error) {
@@ -259,6 +301,28 @@ func isRequirementsFile(path string) bool {
 func isNPMManifest(path string) bool {
 	name := filepath.Base(path)
 	return name == "package.json" || name == "package-lock.json"
+}
+
+func resolvedInManifest(ops providerOps, dir string, alert alert) bool {
+	if ops.manifestDiff == nil {
+		return false
+	}
+	diff, err := ops.manifestDiff(dir, alert.ManifestPath)
+	if err != nil {
+		return false
+	}
+	packageName := strings.ToLower(alert.PackageName)
+	version := strings.ToLower(alert.FirstPatchedVersion)
+	for _, line := range strings.Split(string(diff), "\n") {
+		if !strings.HasPrefix(line, "+") || strings.HasPrefix(line, "+++") {
+			continue
+		}
+		line = strings.ToLower(line)
+		if strings.Contains(line, packageName) && strings.Contains(line, version) {
+			return true
+		}
+	}
+	return false
 }
 
 func isWorkflowFile(path string) bool {
@@ -339,6 +403,42 @@ func reportAlert(report alertReporter, index int, alert alert) {
 	if report != nil {
 		report(index, alert)
 	}
+}
+
+func Run(ctx context.Context, dir string, alerts []github.Alert, providers []Provider, progress ...func(int, int, github.Alert)) error {
+	var providerErrors []error
+	plan := Plan(alerts)
+	for _, provider := range providers {
+		report := func(index int, alert alert) {
+			if len(progress) > 0 && progress[0] != nil {
+				if current, ok := plan[AlertUpdateKey(alert)]; ok {
+					progress[0](current, len(plan), alert)
+				}
+			}
+		}
+		if err := provider.Process(ctx, dir, alerts, report); err != nil {
+			providerErrors = append(providerErrors, fmt.Errorf("process Dependabot alerts: %w", err))
+		}
+	}
+	return errors.Join(providerErrors...)
+}
+
+func Plan(alerts []github.Alert) map[string]int {
+	plan := make(map[string]int)
+	for _, alert := range alerts {
+		if alert.PackageEcosystem == "" || alert.PackageName == "" || alert.ManifestPath == "" || alert.FirstPatchedVersion == "" {
+			continue
+		}
+		key := AlertUpdateKey(alert)
+		if _, exists := plan[key]; !exists {
+			plan[key] = len(plan) + 1
+		}
+	}
+	return plan
+}
+
+func AlertUpdateKey(alert github.Alert) string {
+	return strings.Join([]string{strings.ToLower(alert.PackageEcosystem), alert.ManifestPath, strings.ToLower(alert.PackageName), alert.FirstPatchedVersion, strings.ToLower(alert.Scope)}, "\x00")
 }
 
 func firstReporter(reports []alertReporter) alertReporter {

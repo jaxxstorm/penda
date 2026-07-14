@@ -1,4 +1,4 @@
-package main
+package github
 
 import (
 	"context"
@@ -11,6 +11,12 @@ import (
 type repository struct {
 	Owner string
 	Name  string
+}
+
+type Repository = repository
+
+func DiscoverRepository(ctx context.Context, dir string) (Repository, error) {
+	return discoverRepository(ctx, dir)
 }
 
 func discoverRepository(ctx context.Context, dir string) (repository, error) {

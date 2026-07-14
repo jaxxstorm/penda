@@ -1,4 +1,4 @@
-package main
+package github
 
 import (
 	"context"
@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	defaultGitHubAPIURL = "https://api.github.com"
-	githubAcceptHeader  = "application/vnd.github+json"
+	DefaultAPIURL      = "https://api.github.com"
+	githubAcceptHeader = "application/vnd.github+json"
 )
 
 type alert struct {
@@ -29,19 +29,25 @@ type alert struct {
 	FirstPatchedVersion    string
 }
 
+type Alert = alert
+
 type alertFetcher interface {
 	listAlerts(context.Context, repository, string) ([]alert, error)
 }
 
-type alertProvider interface {
-	process(context.Context, string, []alert, ...alertReporter) error
+type AlertFetcher interface {
+	ListAlerts(context.Context, Repository, string) ([]Alert, error)
 }
-
-type alertReporter func(int, alert)
 
 type githubClient struct {
 	baseURL string
 	client  *http.Client
+}
+
+type Client = githubClient
+
+func NewClient(baseURL string, client *http.Client) *Client {
+	return &Client{baseURL: baseURL, client: client}
 }
 
 type githubAlert struct {
@@ -130,6 +136,10 @@ func (client *githubClient) listAlerts(ctx context.Context, repo repository, tok
 	return alerts, nil
 }
 
+func (client *githubClient) ListAlerts(ctx context.Context, repo Repository, token string) ([]Alert, error) {
+	return client.listAlerts(ctx, repo, token)
+}
+
 func mapAlert(item githubAlert) alert {
 	mapped := alert{
 		Number:                 item.Number,
@@ -173,40 +183,4 @@ func nextPage(header string, current *url.URL) (*url.URL, error) {
 	}
 
 	return nil, nil
-}
-
-func runProviders(ctx context.Context, dir string, alerts []alert, providers []alertProvider, progress ...func(int, int, alert)) error {
-	var providerErrors []error
-	plan := updatePlan(alerts)
-	for _, provider := range providers {
-		report := func(index int, alert alert) {
-			if len(progress) > 0 && progress[0] != nil {
-				if current, ok := plan[alertUpdateKey(alert)]; ok {
-					progress[0](current, len(plan), alert)
-				}
-			}
-		}
-		if err := provider.process(ctx, dir, alerts, report); err != nil {
-			providerErrors = append(providerErrors, fmt.Errorf("process Dependabot alerts: %w", err))
-		}
-	}
-	return errors.Join(providerErrors...)
-}
-
-func updatePlan(alerts []alert) map[string]int {
-	plan := make(map[string]int)
-	for _, alert := range alerts {
-		if alert.PackageEcosystem == "" || alert.PackageName == "" || alert.ManifestPath == "" || alert.FirstPatchedVersion == "" {
-			continue
-		}
-		key := alertUpdateKey(alert)
-		if _, exists := plan[key]; !exists {
-			plan[key] = len(plan) + 1
-		}
-	}
-	return plan
-}
-
-func alertUpdateKey(alert alert) string {
-	return strings.Join([]string{strings.ToLower(alert.PackageEcosystem), alert.ManifestPath, strings.ToLower(alert.PackageName), alert.FirstPatchedVersion, strings.ToLower(alert.Scope)}, "\x00")
 }

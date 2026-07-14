@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"fmt"
@@ -77,7 +77,7 @@ func (renderer *renderer) summary(alerts int, summary *updateSummary, err error,
 		title = "Run completed with errors"
 		color = lipgloss.Color("160")
 	}
-	body := fmt.Sprintf("%d open alerts | %d planned updates\n%d completed | %d failed | %d not attempted", alerts, summary.planned, completed, failed, notAttempted)
+	body := fmt.Sprintf("%d open alerts | %d planned updates\n%d completed | %d failed | %d skipped or not attempted", alerts, summary.planned, completed, failed, notAttempted)
 	if attempted > 0 {
 		label := "Applied updates"
 		if err != nil {
