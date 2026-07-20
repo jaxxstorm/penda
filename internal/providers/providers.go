@@ -32,6 +32,7 @@ type providerOps struct {
 type pythonProvider struct{ ops providerOps }
 type npmProvider struct{ ops providerOps }
 type githubActionsProvider struct{ ops providerOps }
+type goModuleProvider struct{ ops providerOps }
 
 type CommandError struct {
 	dir    string
@@ -78,7 +79,7 @@ func (err *CommandError) Output() string    { return err.output }
 
 func Builtin() []Provider {
 	ops := defaultProviderOps()
-	return []Provider{pythonProvider{ops: ops}, npmProvider{ops: ops}, githubActionsProvider{ops: ops}}
+	return []Provider{pythonProvider{ops: ops}, npmProvider{ops: ops}, githubActionsProvider{ops: ops}, goModuleProvider{ops: ops}}
 }
 
 func (provider pythonProvider) Process(ctx context.Context, dir string, alerts []alert, reports ...alertReporter) error {
@@ -266,6 +267,44 @@ func (provider githubActionsProvider) process(ctx context.Context, dir string, a
 	return provider.Process(ctx, dir, alerts, reports...)
 }
 
+func (provider goModuleProvider) Process(ctx context.Context, dir string, alerts []alert, reports ...alertReporter) error {
+	report := firstReporter(reports)
+	seen := make(map[string]struct{})
+	for index, alert := range alerts {
+		if !isGoModuleEcosystem(alert.PackageEcosystem) || alert.PackageName == "" || alert.FirstPatchedVersion == "" || !isGoModuleManifest(alert.ManifestPath) {
+			continue
+		}
+		manifest, err := resolveManifest(dir, alert.ManifestPath)
+		if err != nil {
+			return err
+		}
+		if resolvedInManifest(provider.ops, dir, alert) {
+			continue
+		}
+		if _, err := provider.ops.stat(manifest); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return errors.New("could not inspect Go module manifest")
+		}
+		argument := alert.PackageName + "@" + alert.FirstPatchedVersion
+		key := manifest + "\x00" + argument
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		reportAlert(report, index, alert)
+		if err := provider.ops.runCommand(ctx, filepath.Dir(manifest), "go", "get", argument); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (provider goModuleProvider) process(ctx context.Context, dir string, alerts []alert, reports ...alertReporter) error {
+	return provider.Process(ctx, dir, alerts, reports...)
+}
+
 func resolveManifest(dir, manifestPath string) (string, error) {
 	clean := filepath.Clean(manifestPath)
 	if manifestPath == "" || filepath.IsAbs(manifestPath) || !filepath.IsLocal(clean) {
@@ -303,6 +342,10 @@ func isNPMManifest(path string) bool {
 	return name == "package.json" || name == "package-lock.json"
 }
 
+func isGoModuleManifest(path string) bool {
+	return filepath.Base(path) == "go.mod"
+}
+
 func resolvedInManifest(ops providerOps, dir string, alert alert) bool {
 	if ops.manifestDiff == nil {
 		return false
@@ -333,6 +376,10 @@ func isWorkflowFile(path string) bool {
 func isGitHubActionsEcosystem(ecosystem string) bool {
 	normalized := strings.ReplaceAll(strings.ToLower(ecosystem), "-", "_")
 	return normalized == "github_actions"
+}
+
+func isGoModuleEcosystem(ecosystem string) bool {
+	return strings.EqualFold(ecosystem, "gomod")
 }
 
 func isPythonEcosystem(ecosystem string) bool {

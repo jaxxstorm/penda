@@ -1,8 +1,8 @@
 # Penda
 
 Penda applies available fixes for open Dependabot alerts directly in a local
-GitHub repository. It supports npm, pip, Pipenv, Poetry, uv, and GitHub Actions
-dependencies.
+GitHub repository. It supports Go modules, npm, pip, Pipenv, Poetry, uv, and
+GitHub Actions dependencies.
 
 ## Install
 
@@ -76,9 +76,9 @@ project's tests before committing them.
 
 - Git, with an `origin` remote that identifies a `github.com` repository.
 - A GitHub token with permission to read Dependabot alerts for that repository.
-- The native package tool required by the alerts being fixed: `npm`, `python`
-  and `pip`, `pipenv`, `poetry`, or `uv`. GitHub Actions dependency updates do
-  not require an additional tool.
+- The native package tool required by the alerts being fixed: `go`, `npm`,
+  `python` and `pip`, `pipenv`, `poetry`, or `uv`. GitHub Actions dependency
+  updates do not require an additional tool.
 
 ## Development
 
